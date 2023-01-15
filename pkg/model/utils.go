@@ -4,5 +4,12 @@
 
 package model
 
-type Endpoint struct {
+import "os"
+
+func GetEnvVarWithDefault(key, defaultVal string) string {
+	val := os.Getenv(key)
+	if len(val) == 0 {
+		val = defaultVal
+	}
+	return val
 }

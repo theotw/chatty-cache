@@ -9,5 +9,5 @@ type Cache interface {
 	// Put  puts an value into the cache, if the type of cache has a size limit, stuff will get tossed out
 	Put(cacheName string, cacheKey string, value interface{}) error
 	// Get gets a value from the cache
-	Get(cacheName string, cacheKey string) (interface{}, error)
+	Get(cacheName string, cacheKey string, valueOut interface{}) error
 }

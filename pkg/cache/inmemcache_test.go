@@ -16,7 +16,7 @@ type SimpleStruct struct {
 
 func TestInMemBasic(t *testing.T) {
 
-	cache1 := NewInMemCache(200)
+	cache1 := NewInMemCache(200, nil)
 	//these entries have a know size of 8 chars, and this info is used in a test, dont change them
 	cache1.Put("space0", "key1", "value0-1")
 	cache1.Put("space0", "key2", "value0-2")
@@ -42,43 +42,42 @@ func TestInMemBasic(t *testing.T) {
 }
 
 func BasicTest(t *testing.T, cache1 *InMemCache) {
-	val, err := cache1.Get("space1", "key2")
+	var val string
+	err := cache1.Get("space1", "key2", &val)
 	assert.Nil(t, err)
 	assert.NotNil(t, val)
 	assert.Equal(t, "value1-2", val)
 
-	val, err = cache1.Get("space1", "notthere")
+	err = cache1.Get("space1", "notthere", &val)
 	assert.NotNil(t, err)
 	cacheError := err.(*CacheError)
 	assert.Equal(t, NoItem, cacheError.Problem)
 
-	val, err = cache1.Get("space2", "key2")
+	var simpleVal SimpleStruct
+	err = cache1.Get("space2", "key2", &simpleVal)
 	if assert.Nil(t, err) {
 		assert.NotNil(t, val)
-		simple, ok := val.(*SimpleStruct)
-		assert.True(t, ok, "should be a type simple struct")
-		assert.Equal(t, "two", simple.S)
+		assert.Equal(t, "two", simpleVal.S)
 	}
 }
 func EvictTest(t *testing.T, cache1 *InMemCache) {
 	//lets add a value that should eventually evict the 2nd and third entry fo space 0 first two entries
 
 	//first touch the first entry, to make not be least recent
-	cache1.Get("space0", "key1")
+	var val string
+	cache1.Get("space0", "key1", &val)
 	size := cache1.maxCacheSize - cache1.totalUsedCacheSize + 1
 	bits := make([]byte, size)
 
 	cache1.Put("space1", "bigKey", bits)
-	item, err := cache1.Get("space0", "key2")
+	err := cache1.Get("space0", "key2", &val)
 	assert.NotNil(t, err, "This should be gone")
-	assert.Nil(t, item)
-	item, err = cache1.Get("space0", "key3")
+	err = cache1.Get("space0", "key3", &val)
 	assert.NotNil(t, err, "This should be gone")
-	assert.Nil(t, item)
 
-	item, err = cache1.Get("space0", "key1")
+	err = cache1.Get("space0", "key1", &val)
 	assert.Nil(t, err)
-	assert.NotNil(t, item)
+	assert.NotNil(t, val)
 
 	bits = make([]byte, 300)
 	puterr := cache1.Put("space1", "bigKey", bits)

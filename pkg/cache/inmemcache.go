@@ -5,7 +5,11 @@
 package cache
 
 import (
+	"encoding/base64"
 	"encoding/json"
+	log "github.com/sirupsen/logrus"
+	"github.com/theotw/chatty-cache/pkg/chatter"
+	"github.com/theotw/chatty-cache/pkg/model"
 	"sort"
 	"sync"
 	"time"
@@ -14,7 +18,7 @@ import (
 type cacheEntry struct {
 	CacheName string
 	CacheKey  string
-	CacheData interface{}
+	CacheData []byte
 
 	// cacheTime time this was cached
 	cacheTime   time.Time
@@ -33,34 +37,62 @@ type InMemCache struct {
 	caches             map[string]map[string]*cacheEntry
 	totalUsedCacheSize uint64
 	lock               sync.RWMutex
+	chatter            chatter.CacheChatter
 }
 
-func NewInMemCache(maxSize uint64) *InMemCache {
+// NewInMemCache Creates a new in memory cache with maxh size and an optional chatter relay to share messages across processes
+func NewInMemCache(maxSize uint64, chatter chatter.CacheChatter) *InMemCache {
 	ret := new(InMemCache)
 	ret.maxCacheSize = maxSize
 	ret.caches = make(map[string]map[string]*cacheEntry, 0)
+	ret.chatter = chatter
+	if ret.chatter != nil {
+		ret.chatter.RegisterListenerForReplicatedObjects(func(message *model.CacheRelayMessage) {
+			ret.listenerForMessages(message)
+		})
+	}
 	return ret
+}
+func (t *InMemCache) listenerForMessages(message *model.CacheRelayMessage) {
+	bits, err := base64.StdEncoding.DecodeString(message.CacheValue)
+	if err != nil {
+		log.WithError(err).Error("Unable to base 64 decode a cache relay message")
+		return
+	}
+	t.putBits(message.CacheName, message.CacheKey, bits)
 }
 
 // Put  puts an value into the cache
 func (t *InMemCache) Put(cacheName string, cacheKey string, value interface{}) error {
+
+	jsonBits, err := json.Marshal(value)
+	if err != nil {
+		err := NewCacheError(NotJsonifiable, err)
+		return err
+	}
+	err = t.putBits(cacheName, cacheKey, jsonBits)
+	if t.chatter != nil {
+		//send a replicate message
+		var replicate model.CacheRelayMessage
+		replicate.CacheName = cacheName
+		replicate.CacheKey = cacheKey
+		replicate.CacheValue = base64.StdEncoding.EncodeToString(jsonBits)
+		t.chatter.ReplicatedCachedObject(&replicate)
+	}
+	return err
+}
+func (t *InMemCache) putBits(cacheName, cacheKey string, valueJsonBits []byte) error {
 	x := new(cacheEntry)
 	x.CacheKey = cacheKey
 	x.CacheName = cacheName
 	x.cacheTime = time.Now()
 	x.touch()
-	x.CacheData = value
-	marshal, err := json.Marshal(value)
-	if err != nil {
-		err := NewCacheError(NotJsonifiable, err)
-		return err
-	}
-	x.cacheSize = uint64(len(marshal))
+
+	x.CacheData = valueJsonBits
+	x.cacheSize = uint64(len(valueJsonBits))
 	if x.cacheSize > t.maxCacheSize {
 		return NewCacheError(ExceedsTotalCacheSize, nil)
 	}
-	// TODO send these bits for replication
-
 	var ret *CacheError
 	// DO NOT RETURN BETWEEN THESE LOCK/UNLOCK
 	//I dont like defers for unlock, I want it unlocked asap, not sitting as waiting on the stack
@@ -86,7 +118,7 @@ func (t *InMemCache) Put(cacheName string, cacheKey string, value interface{}) e
 }
 
 // Get gets a value from the cache, if the item is not found, a CacheError is returned
-func (t *InMemCache) Get(cacheName string, cacheKey string) (interface{}, error) {
+func (t *InMemCache) Get(cacheName string, cacheKey string, valOut interface{}) error {
 	var entry *cacheEntry
 	t.lock.RLock()
 	cache, ok := t.caches[cacheName]
@@ -95,10 +127,16 @@ func (t *InMemCache) Get(cacheName string, cacheKey string) (interface{}, error)
 	}
 	t.lock.RUnlock()
 	if entry == nil {
-		return nil, NewCacheError(NoItem, nil)
+		return NewCacheError(NoItem, nil)
 	}
 	entry.touch()
-	return entry.CacheData, nil
+	//if you are wondering how we can get an error on a bit stream we made, it is because it
+	//may have been made in another process space and thus mismatched
+	err := json.Unmarshal(entry.CacheData, valOut)
+	if err != nil {
+		NewCacheError(NotJsonifiable, err)
+	}
+	return err
 }
 
 // evict toss out oldest touch entries until evictCount bytes are freed
