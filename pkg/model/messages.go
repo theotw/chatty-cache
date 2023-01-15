@@ -17,12 +17,3 @@ type ExchangeMessage struct {
 	//MessageData base64 encoded message data
 	MessageData string `json:"messageData"`
 }
-
-type CacheEntry struct {
-	CacheName string
-	CacheKey  string
-	CacheData interface{}
-
-	// cacheTime time this was cached
-	cacheTime time.Time
-}
