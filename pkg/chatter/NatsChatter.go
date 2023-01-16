@@ -23,7 +23,7 @@ type NatMessagesChatterRelay struct {
 	replicateSubject string
 	natsURL          string
 	objectListener   ObjectListener
-	//nodeID random UUID to self reference the node
+	//NodeID random UUID to self reference the node
 	nodeID string
 }
 
@@ -33,9 +33,9 @@ const noEncryption0 = protocolVersion(0)
 const encryption0 = protocolVersion(1)
 
 type replicateCacheMessage struct {
-	protocolVersion protocolVersion
-	messageData     string
-	nodeID          string
+	ProtocolVersion protocolVersion `json:"protocolVersion"`
+	MessageData     string          `json:"messageData"`
+	NodeID          string          `json:"nodeID"`
 }
 
 func NewNatsMessageChatterRelay() (*NatMessagesChatterRelay, error) {
@@ -56,28 +56,32 @@ func NewNatsMessageChatterRelay() (*NatMessagesChatterRelay, error) {
 
 func (t *NatMessagesChatterRelay) ReplicatedCachedObject(message *model.CacheRelayMessage) {
 	var syncMsg replicateCacheMessage
-	syncMsg.nodeID = t.nodeID
+	syncMsg.NodeID = t.nodeID
 	bits, err := json.Marshal(message)
 	if err != nil {
 		log.WithError(err).Errorf("Unable to encode a cache releay message")
 		return
 	}
-	syncMsg.messageData = base64.StdEncoding.EncodeToString(bits)
-	syncMsg.protocolVersion = noEncryption0
+	syncMsg.MessageData = base64.StdEncoding.EncodeToString(bits)
+	syncMsg.ProtocolVersion = noEncryption0
 	bits, err = json.Marshal(&syncMsg)
 	if err != nil {
 		log.WithError(err).Errorf("Unable to encode a replication message")
 		return
 	}
 
-	t.nc.Publish(t.replicateSubject, bits)
+	err = t.nc.Publish(t.replicateSubject, bits)
+	if err != nil {
+		log.WithError(err).Error("Error publishing cache relay message to nats")
+	}
+	t.nc.Flush()
 }
 func (t *NatMessagesChatterRelay) RegisterListenerForReplicatedObjects(listener ObjectListener) {
 	t.objectListener = listener
 }
 func (t *NatMessagesChatterRelay) init() error {
 	// [begin publish_bytes]
-	nc, err := nats.Connect(t.natsURL, nats.Name("chatty cache"))
+	nc, err := nats.Connect(t.natsURL)
 	if err != nil {
 		log.Error(err)
 		return err
@@ -97,11 +101,12 @@ func (t *NatMessagesChatterRelay) handleCacheSync(msg *nats.Msg) {
 		log.WithError(err).Errorf("Error decoding a cache sync message")
 		return
 	}
-	if x.nodeID == t.nodeID {
+	if x.NodeID == t.nodeID {
+		log.Tracef("Recieved Message for my node %s, dropping it", t.nodeID)
 		// recieved a message for this node, not point in storing it
 		return
 	}
-	switch x.protocolVersion {
+	switch x.ProtocolVersion {
 	case noEncryption0:
 		t.processUnencrypted(&x)
 		break
@@ -109,12 +114,12 @@ func (t *NatMessagesChatterRelay) handleCacheSync(msg *nats.Msg) {
 		t.processEncrypted0(&x)
 		break
 	default:
-		log.Errorf("Recieved a cache relay message with an unknown protocol version %d", x.protocolVersion)
+		log.Errorf("Recieved a cache relay message with an unknown protocol version %d", x.ProtocolVersion)
 	}
 }
 func (t *NatMessagesChatterRelay) processUnencrypted(msg *replicateCacheMessage) {
 	var relayMsg model.CacheRelayMessage
-	bits, err := base64.StdEncoding.DecodeString(msg.messageData)
+	bits, err := base64.StdEncoding.DecodeString(msg.MessageData)
 	if err != nil {
 		log.WithError(err).Errorf("Unable to base 64 decode message data ")
 		return
@@ -124,6 +129,7 @@ func (t *NatMessagesChatterRelay) processUnencrypted(msg *replicateCacheMessage)
 		log.WithError(err).Errorf("Unable to unmarshal message data ")
 		return
 	}
+	log.Tracef("Recieved Cache Sync %s %s", relayMsg.CacheName, relayMsg.CacheKey)
 	if t.objectListener != nil {
 		t.objectListener(&relayMsg)
 	}
