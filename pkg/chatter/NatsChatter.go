@@ -15,16 +15,24 @@ import (
 
 const MessageReplicateChannelEnvVar = "CHATTY_NATS_SUBJECT"
 const NatsURLEnvVar = "NATS_SERVER"
+const MasterPassPhraseEnvVar = "CHATTY_PASSPHRASE"
 const MessageReplicationSubject = "chatty.replicate"
 const NatsServerURLDefault = "localhost:30221"
 
+type encryptedRelayMessage struct {
+	//MessageKey base 64 encoded message key
+	MessageKey string `json:"messageKey"`
+	//CipherData base64 encoded cipher data of the jsonified model.CacheRelayMessag
+	CipherData string `json:"cipherData"`
+}
 type NatMessagesChatterRelay struct {
 	nc               *nats.Conn
 	replicateSubject string
 	natsURL          string
 	objectListener   ObjectListener
 	//NodeID random UUID to self reference the node
-	nodeID string
+	nodeID           string
+	masterPassPhrase string
 }
 
 type protocolVersion int
@@ -43,6 +51,7 @@ func NewNatsMessageChatterRelay() (*NatMessagesChatterRelay, error) {
 
 	ret.replicateSubject = model.GetEnvVarWithDefault(MessageReplicateChannelEnvVar, MessageReplicationSubject)
 	ret.natsURL = model.GetEnvVarWithDefault(NatsURLEnvVar, NatsServerURLDefault)
+	ret.masterPassPhrase = model.GetEnvVarWithDefault(MasterPassPhraseEnvVar, "")
 	u, uuidErr := uuid.NewUUID()
 	if uuidErr != nil {
 		log.WithError(uuidErr).Errorf("Unable to generate a node UUID.  Defaulting UUID 42")
@@ -54,7 +63,15 @@ func NewNatsMessageChatterRelay() (*NatMessagesChatterRelay, error) {
 	return ret, err
 }
 
-func (t *NatMessagesChatterRelay) ReplicatedCachedObject(message *model.CacheRelayMessage) {
+func (t *NatMessagesChatterRelay) ReplicateCachedObject(message *model.CacheRelayMessage) {
+	if len(t.masterPassPhrase) == 0 {
+		t.sendReplicateMessageNoEncrypt0(message)
+	} else {
+		t.sendReplicateMessageEncrypt0(message)
+	}
+}
+
+func (t *NatMessagesChatterRelay) sendReplicateMessageNoEncrypt0(message *model.CacheRelayMessage) {
 	var syncMsg replicateCacheMessage
 	syncMsg.NodeID = t.nodeID
 	bits, err := json.Marshal(message)
@@ -62,8 +79,45 @@ func (t *NatMessagesChatterRelay) ReplicatedCachedObject(message *model.CacheRel
 		log.WithError(err).Errorf("Unable to encode a cache releay message")
 		return
 	}
+
 	syncMsg.MessageData = base64.StdEncoding.EncodeToString(bits)
 	syncMsg.ProtocolVersion = noEncryption0
+	bits, err = json.Marshal(&syncMsg)
+	if err != nil {
+		log.WithError(err).Errorf("Unable to encode a replication message")
+		return
+	}
+
+	err = t.nc.Publish(t.replicateSubject, bits)
+	if err != nil {
+		log.WithError(err).Error("Error publishing cache relay message to nats")
+	}
+	t.nc.Flush()
+}
+func (t *NatMessagesChatterRelay) sendReplicateMessageEncrypt0(message *model.CacheRelayMessage) {
+	var syncMsg replicateCacheMessage
+	syncMsg.NodeID = t.nodeID
+	bits, err := json.Marshal(message)
+	if err != nil {
+		log.WithError(err).Errorf("Unable to encode a cache releay message")
+		return
+	}
+
+	var cipherMessage encryptedRelayMessage
+	masterKey := makeAesKey(t.masterPassPhrase)
+	messageKeyPlainText := makeRandom256AesKey()
+	messageKeyCipherText, _ := DoAesCBCEncrypt(messageKeyPlainText, masterKey)
+	cipherMessage.MessageKey = base64.StdEncoding.EncodeToString(messageKeyCipherText)
+	messageCipherText, _ := DoAesCBCEncrypt(bits, messageKeyPlainText)
+	cipherMessage.CipherData = base64.StdEncoding.EncodeToString(messageCipherText)
+	bits, err = json.Marshal(cipherMessage)
+	if err != nil {
+		log.WithError(err).Errorf("Unable to encode a cipher cache releay message")
+		return
+	}
+
+	syncMsg.MessageData = base64.StdEncoding.EncodeToString(bits)
+	syncMsg.ProtocolVersion = encryption0
 	bits, err = json.Marshal(&syncMsg)
 	if err != nil {
 		log.WithError(err).Errorf("Unable to encode a replication message")
@@ -80,7 +134,7 @@ func (t *NatMessagesChatterRelay) RegisterListenerForReplicatedObjects(listener 
 	t.objectListener = listener
 }
 func (t *NatMessagesChatterRelay) init() error {
-	// [begin publish_bytes]
+
 	nc, err := nats.Connect(t.natsURL)
 	if err != nil {
 		log.Error(err)
@@ -135,5 +189,39 @@ func (t *NatMessagesChatterRelay) processUnencrypted(msg *replicateCacheMessage)
 	}
 }
 func (t *NatMessagesChatterRelay) processEncrypted0(msg *replicateCacheMessage) {
-	panic("not implemented")
+	var cipherMessage encryptedRelayMessage
+	cipherMessageBits, cbError := base64.StdEncoding.DecodeString(msg.MessageData)
+	if cbError != nil {
+		log.WithError(cbError).Errorf("Unable to base 64 decode cipher message data ")
+		return
+	}
+	json.Unmarshal(cipherMessageBits, &cipherMessage)
+	masterKey := makeAesKey(t.masterPassPhrase)
+	messageKeyCipherBits, cbError2 := base64.StdEncoding.DecodeString(cipherMessage.MessageKey)
+	if cbError2 != nil {
+		log.WithError(cbError).Errorf("Unable to base 64 decode messageKey")
+		return
+	}
+	messageKey, _ := DoAesCBCDecrypt(messageKeyCipherBits, masterKey)
+	msgDataCipherBits, mdError := base64.StdEncoding.DecodeString(cipherMessage.CipherData)
+	if mdError != nil {
+		log.WithError(cbError).Errorf("Unable to base 64 decode message cipher data")
+		return
+	}
+	plainBits, mdDecrError := DoAesCBCDecrypt(msgDataCipherBits, messageKey)
+	if mdDecrError != nil {
+		log.WithError(cbError).Errorf("Unable to decypt message cipher data")
+		return
+	}
+
+	var relayMsg model.CacheRelayMessage
+	err := json.Unmarshal(plainBits, &relayMsg)
+	if err != nil {
+		log.WithError(err).Errorf("Unable to unmarshal message data ")
+		return
+	}
+	log.Tracef("Recieved Cache Sync %s %s", relayMsg.CacheName, relayMsg.CacheKey)
+	if t.objectListener != nil {
+		t.objectListener(&relayMsg)
+	}
 }

@@ -8,6 +8,6 @@ import "github.com/theotw/chatty-cache/pkg/model"
 
 type ObjectListener func(message *model.CacheRelayMessage)
 type CacheChatter interface {
-	ReplicatedCachedObject(message *model.CacheRelayMessage)
+	ReplicateCachedObject(message *model.CacheRelayMessage)
 	RegisterListenerForReplicatedObjects(listener ObjectListener)
 }

@@ -77,7 +77,7 @@ func (t *InMemCache) Put(cacheName string, cacheKey string, value interface{}) e
 		replicate.CacheName = cacheName
 		replicate.CacheKey = cacheKey
 		replicate.CacheValue = base64.StdEncoding.EncodeToString(jsonBits)
-		t.chatter.ReplicatedCachedObject(&replicate)
+		t.chatter.ReplicateCachedObject(&replicate)
 	}
 	return err
 }

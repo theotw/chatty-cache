@@ -9,19 +9,21 @@ import (
 	log "github.com/sirupsen/logrus"
 	"github.com/theotw/chatty-cache/pkg/cache"
 	"github.com/theotw/chatty-cache/pkg/chatter"
+	"os"
 	"testing"
 	"time"
 )
 
 func runCacheTest(t *testing.T, putCacheName string, getCacheName string) {
+	os.Setenv("CHATTY_PASSPHRASE", "bob")
 	log.SetLevel(log.TraceLevel)
 	relay, err := chatter.NewNatsMessageChatterRelay()
 	if err != nil {
 		log.WithError(err).Fatalf("Unable to connect to nats")
 	}
-	time.Sleep(20 * time.Second)
-	memCache := cache.NewInMemCache(2*1024*1024, relay)
 
+	memCache := cache.NewInMemCache(2*1024*1024, relay)
+	time.Sleep(20 * time.Second)
 	limit := 5
 	for i := 0; i < limit; i++ {
 		key := fmt.Sprintf("key%d", i)
